@@ -10,13 +10,22 @@
 
 // Mouse speed (logical pixels per second) that fully tilts the stick at sensitivity 1.0
 #define MOUSE_STICK_FULL_TILT_SPEED 3000.0
-// Mouse events are sparse and uneven, so speed is averaged over this window
-#define MOUSE_STICK_SMOOTHING_NS (25LL * 1000 * 1000)
+// Speed is measured over at least this span, so high polling rate mice don't add noise
+#define MOUSE_STICK_MIN_SPAN_NS (8LL * 1000 * 1000)
+// The first move after rest reports motion that started earlier, assume it covers this span
+#define MOUSE_STICK_START_SPAN_NS (12LL * 1000 * 1000)
+// The mouse counts as stopped after this many reporting intervals without motion,
+// clamped to the range below
+#define MOUSE_STICK_STOP_INTERVALS 2.5
+#define MOUSE_STICK_STOP_MIN_NS (25LL * 1000 * 1000)
+#define MOUSE_STICK_STOP_MAX_NS (80LL * 1000 * 1000)
+// Time constant smoothing the steps between bursts of mouse moves
+#define MOUSE_STICK_SMOOTHING_S 0.012
+// Speed (pixels per second) below which motion is treated as hand jitter
+#define MOUSE_STICK_MIN_SPEED 30.0
 // After a longer pause (focus change, in-stream menu, cursor re-entering the window)
 // tracking restarts from the current position instead of producing a jump
 #define MOUSE_STICK_RESYNC_NS (100LL * 1000 * 1000)
-// Accumulated motion below this (in pixels) is treated as hand jitter
-#define MOUSE_STICK_MIN_MOTION 1.5
 
 void MouseStick::SetParameters(float sensitivity, float deadzone_compensation)
 {
@@ -52,7 +61,7 @@ bool MouseStick::Move(QWindow *window, const QPointF &global_pos, qint64 now_ns)
 		QPointF delta = global_pos - last_pos;
 		if(!delta.isNull())
 		{
-			samples.append({now_ns, delta});
+			AddMotion(delta, now_ns);
 			moved = true;
 		}
 	}
@@ -74,27 +83,55 @@ bool MouseStick::Move(QWindow *window, const QPointF &global_pos, qint64 now_ns)
 	return moved;
 }
 
+void MouseStick::AddMotion(const QPointF &delta, qint64 now_ns)
+{
+	if(!moving)
+	{
+		history.clear();
+		motion = QPointF();
+		history.append({now_ns - MOUSE_STICK_START_SPAN_NS, motion});
+		last_update_ns = now_ns;
+		moving = true;
+	}
+	motion += delta;
+	history.append({now_ns, motion});
+
+	// Measure from the newest sample that is at least the minimum span old. With moves arriving
+	// in bursts this is the previous burst, so speed = motion of the burst / time since the last one.
+	while(history.size() > 2 && now_ns - history[1].time_ns >= MOUSE_STICK_MIN_SPAN_NS)
+		history.removeFirst();
+	const Sample &from = history.first();
+	const qint64 span_ns = std::max<qint64>(now_ns - from.time_ns, 1);
+	target_velocity = (motion - from.motion) * (1e9 / span_ns);
+	stop_after_ns = std::clamp<qint64>(static_cast<qint64>(span_ns * MOUSE_STICK_STOP_INTERVALS),
+			MOUSE_STICK_STOP_MIN_NS, MOUSE_STICK_STOP_MAX_NS);
+	last_motion_ns = now_ns;
+}
+
 bool MouseStick::Update(qint64 now_ns, int16_t *x, int16_t *y)
 {
-	while(!samples.isEmpty() && now_ns - samples.first().time_ns > MOUSE_STICK_SMOOTHING_NS)
-		samples.removeFirst();
-
-	QPointF motion;
-	for(const auto &sample : samples)
-		motion += sample.delta;
-
 	*x = 0;
 	*y = 0;
-	if(std::abs(motion.x()) + std::abs(motion.y()) < MOUSE_STICK_MIN_MOTION)
-		return !samples.isEmpty();
+	if(!moving)
+		return false;
+	if(now_ns - last_motion_ns > stop_after_ns)
+	{
+		// Stop right away, easing out would make the camera overshoot
+		moving = false;
+		velocity = QPointF();
+		return false;
+	}
 
-	const double window_s = MOUSE_STICK_SMOOTHING_NS / 1e9;
-	const double vx = motion.x() / window_s;
-	const double vy = motion.y() / window_s;
-	const double speed = std::hypot(vx, vy);
+	const double dt = (now_ns - last_update_ns) / 1e9;
+	last_update_ns = now_ns;
+	velocity += (target_velocity - velocity) * (1.0 - std::exp(-dt / MOUSE_STICK_SMOOTHING_S));
+
+	const double speed = std::hypot(velocity.x(), velocity.y());
+	if(speed < MOUSE_STICK_MIN_SPEED)
+		return true;
 	const double tilt = std::min(1.0, speed * sensitivity / MOUSE_STICK_FULL_TILT_SPEED);
 	const double magnitude = deadzone_compensation + (1.0 - deadzone_compensation) * tilt;
-	*x = static_cast<int16_t>(std::lround(vx / speed * magnitude * INT16_MAX));
-	*y = static_cast<int16_t>(std::lround(vy / speed * magnitude * INT16_MAX));
+	*x = static_cast<int16_t>(std::lround(velocity.x() / speed * magnitude * INT16_MAX));
+	*y = static_cast<int16_t>(std::lround(velocity.y() / speed * magnitude * INT16_MAX));
 	return true;
 }

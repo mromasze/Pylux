@@ -15,9 +15,12 @@ class QWindow;
  * Turns mouse motion into right analog stick deflection ("mouse look").
  *
  * While the stream window is focused the cursor is hidden and warped back to the window
- * center before it can leave the window. Motion is averaged over a short window and the
- * stick is tilted proportionally to mouse speed, starting from a minimum deflection that
- * overcomes the game's own stick dead zone.
+ * center before it can leave the window. The stick is tilted proportionally to mouse speed,
+ * starting from a minimum deflection that overcomes the game's own stick dead zone.
+ *
+ * Mouse moves often arrive in bursts (once per rendered frame), so speed is measured between
+ * the actual times motion was reported instead of over a fixed window, which would alias
+ * with the burst rate and make the camera stutter.
  */
 class MouseStick
 {
@@ -32,8 +35,13 @@ class MouseStick
 		bool Move(QWindow *window, const QPointF &global_pos, qint64 now_ns);
 
 		/**
+		 * Feed relative mouse motion, as Move() does after tracking the cursor.
+		 */
+		void AddMotion(const QPointF &delta, qint64 now_ns);
+
+		/**
 		 * Compute the current stick deflection.
-		 * @return false once there is no recent motion left, i.e. the stick is at rest
+		 * @return false once the mouse stopped, i.e. the stick is back at rest
 		 */
 		bool Update(qint64 now_ns, int16_t *x, int16_t *y);
 
@@ -41,12 +49,23 @@ class MouseStick
 		struct Sample
 		{
 			qint64 time_ns;
-			QPointF delta;
+			QPointF motion;
 		};
 
 		float sensitivity = 1.0f;
 		float deadzone_compensation = 0.15f;
-		QList<Sample> samples;
+
+		// speed measurement
+		QList<Sample> history;
+		QPointF motion; // accumulated since the mouse started moving
+		QPointF target_velocity; // pixels per second
+		QPointF velocity; // smoothed
+		qint64 last_motion_ns = 0;
+		qint64 stop_after_ns = 0;
+		qint64 last_update_ns = 0;
+		bool moving = false;
+
+		// cursor capture
 		bool tracking = false;
 		QPointF last_pos;
 		qint64 last_move_ns = 0;
