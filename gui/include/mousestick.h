@@ -40,7 +40,8 @@ class MouseStick
 		void AddMotion(const QPointF &delta, qint64 now_ns);
 
 		/**
-		 * Compute the current stick deflection.
+		 * Compute the current stick deflection. Changes too small for the game to notice keep the
+		 * previous value, so the caller only has to send a new controller state when it changes.
 		 * @return false once the mouse stopped, i.e. the stick is back at rest
 		 */
 		bool Update(qint64 now_ns, int16_t *x, int16_t *y);
@@ -64,6 +65,8 @@ class MouseStick
 		qint64 stop_after_ns = 0;
 		qint64 last_update_ns = 0;
 		bool moving = false;
+		int16_t output_x = 0;
+		int16_t output_y = 0;
 
 		// cursor capture
 		bool tracking = false;

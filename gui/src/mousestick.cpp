@@ -23,6 +23,9 @@
 #define MOUSE_STICK_SMOOTHING_S 0.012
 // Speed (pixels per second) below which motion is treated as hand jitter
 #define MOUSE_STICK_MIN_SPEED 30.0
+// Smallest stick change worth sending (2% of the axis range); every controller state
+// packet shares the connection with the video stream
+#define MOUSE_STICK_MIN_CHANGE 655
 // After a longer pause (focus change, in-stream menu, cursor re-entering the window)
 // tracking restarts from the current position instead of producing a jump
 #define MOUSE_STICK_RESYNC_NS (100LL * 1000 * 1000)
@@ -110,15 +113,19 @@ void MouseStick::AddMotion(const QPointF &delta, qint64 now_ns)
 
 bool MouseStick::Update(qint64 now_ns, int16_t *x, int16_t *y)
 {
-	*x = 0;
-	*y = 0;
 	if(!moving)
+	{
+		*x = output_x = 0;
+		*y = output_y = 0;
 		return false;
+	}
 	if(now_ns - last_motion_ns > stop_after_ns)
 	{
 		// Stop right away, easing out would make the camera overshoot
 		moving = false;
 		velocity = QPointF();
+		*x = output_x = 0;
+		*y = output_y = 0;
 		return false;
 	}
 
@@ -126,12 +133,27 @@ bool MouseStick::Update(qint64 now_ns, int16_t *x, int16_t *y)
 	last_update_ns = now_ns;
 	velocity += (target_velocity - velocity) * (1.0 - std::exp(-dt / MOUSE_STICK_SMOOTHING_S));
 
+	int16_t new_x = 0;
+	int16_t new_y = 0;
 	const double speed = std::hypot(velocity.x(), velocity.y());
-	if(speed < MOUSE_STICK_MIN_SPEED)
-		return true;
-	const double tilt = std::min(1.0, speed * sensitivity / MOUSE_STICK_FULL_TILT_SPEED);
-	const double magnitude = deadzone_compensation + (1.0 - deadzone_compensation) * tilt;
-	*x = static_cast<int16_t>(std::lround(velocity.x() / speed * magnitude * INT16_MAX));
-	*y = static_cast<int16_t>(std::lround(velocity.y() / speed * magnitude * INT16_MAX));
+	if(speed >= MOUSE_STICK_MIN_SPEED)
+	{
+		const double tilt = std::min(1.0, speed * sensitivity / MOUSE_STICK_FULL_TILT_SPEED);
+		const double magnitude = deadzone_compensation + (1.0 - deadzone_compensation) * tilt;
+		new_x = static_cast<int16_t>(std::lround(velocity.x() / speed * magnitude * INT16_MAX));
+		new_y = static_cast<int16_t>(std::lround(velocity.y() / speed * magnitude * INT16_MAX));
+	}
+
+	const bool at_rest = !output_x && !output_y;
+	const bool to_rest = !new_x && !new_y;
+	if(at_rest != to_rest
+			|| std::abs(new_x - output_x) >= MOUSE_STICK_MIN_CHANGE
+			|| std::abs(new_y - output_y) >= MOUSE_STICK_MIN_CHANGE)
+	{
+		output_x = new_x;
+		output_y = new_y;
+	}
+	*x = output_x;
+	*y = output_y;
 	return true;
 }

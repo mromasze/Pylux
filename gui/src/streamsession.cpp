@@ -23,7 +23,7 @@
 #define STEAMDECK_HAPTIC_INTERVAL_MS 10 // check every interval
 #define NEW_DPAD_TOUCH_INTERVAL_MS 500
 #define DPAD_TOUCH_UPDATE_INTERVAL_MS 10
-#define MOUSE_STICK_UPDATE_INTERVAL_MS 4
+#define MOUSE_STICK_UPDATE_INTERVAL_MS 16 // about once per game frame
 #define STEAMDECK_HAPTIC_PACKETS_PER_ANALYSIS 4 // send packets every interval * packets per analysis
 #define RUMBLE_HAPTICS_PACKETS_PER_RUMBLE 3
 #define STEAMDECK_HAPTIC_SAMPLING_RATE 3000
